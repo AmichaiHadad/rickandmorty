@@ -1,0 +1,160 @@
+name: Kubernetes Deployment Test
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  k8s-test:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+      
+      - name: Build Docker image
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          push: false
+          load: true
+          tags: rick-and-morty-api:latest
+      
+      - name: Create k8s Kind Cluster
+        uses: helm/kind-action@v1.5.0
+        with:
+          cluster_name: kind
+          config: |
+            kind: Cluster
+            apiVersion: kind.x-k8s.io/v1alpha4
+            nodes:
+            - role: control-plane
+              kubeadmConfigPatches:
+              - |
+                kind: InitConfiguration
+                nodeRegistration:
+                  kubeletExtraArgs:
+                    node-labels: "ingress-ready=true"
+              extraPortMappings:
+              - containerPort: 80
+                hostPort: 80
+                protocol: TCP
+              - containerPort: 443
+                hostPort: 443
+                protocol: TCP
+            - role: worker
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+          
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest requests
+      
+      - name: Install NGINX Ingress
+        run: |
+          kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.8.2/deploy/static/provider/kind/deploy.yaml
+          echo "Waiting for ingress controller to be ready..."
+          kubectl wait --namespace ingress-nginx \
+            --for=condition=ready pod \
+            --selector=app.kubernetes.io/component=controller \
+            --timeout=180s
+      
+      - name: Install Helm
+        uses: azure/setup-helm@v3
+        with:
+          version: 'v3.11.1'
+      
+      - name: Deploy Rick and Morty API using Helm
+        run: |
+          # Deploy using Helm
+          helm install rick-and-morty-api ./helm/rick-and-morty
+          
+          # Wait for deployment to be ready
+          kubectl wait --for=condition=available --timeout=120s deployment/rick-and-morty-api
+          
+          # Add host entry to /etc/hosts
+          echo "127.0.0.1 rickandmorty.local" | sudo tee -a /etc/hosts
+          
+          # Give ingress some time to be configured
+          sleep 10
+      
+      - name: Create test script
+        run: |
+          cat << EOF > test_api.py
+          import requests
+          import time
+          import pytest
+
+          BASE_URL = "http://rickandmorty.local"
+          MAX_RETRIES = 5
+          RETRY_DELAY = 5  # seconds
+
+          def test_health_endpoint():
+              """Test the health endpoint returns OK status."""
+              for attempt in range(MAX_RETRIES):
+                  try:
+                      response = requests.get(f"{BASE_URL}/healthcheck")
+                      response.raise_for_status()
+                      data = response.json()
+                      assert response.status_code == 200
+                      assert data["status"] == "ok"
+                      return
+                  except (requests.RequestException, AssertionError) as e:
+                      if attempt < MAX_RETRIES - 1:
+                          print(f"Retry attempt {attempt + 1}/{MAX_RETRIES} after error: {str(e)}")
+                          time.sleep(RETRY_DELAY)
+                      else:
+                          raise
+
+          def test_root_endpoint():
+              """Test the root endpoint provides API information."""
+              response = requests.get(f"{BASE_URL}/")
+              response.raise_for_status()
+              data = response.json()
+              assert response.status_code == 200
+              assert "name" in data
+              assert "endpoints" in data
+
+          def test_characters_endpoint():
+              """Test the characters endpoint returns character data."""
+              response = requests.get(f"{BASE_URL}/characters")
+              response.raise_for_status()
+              data = response.json()
+              assert response.status_code == 200
+              assert "count" in data
+              assert "characters" in data
+              assert isinstance(data["characters"], list)
+              if len(data["characters"]) > 0:
+                  assert "name" in data["characters"][0]
+                  assert "location" in data["characters"][0]
+                  assert "image" in data["characters"][0]
+          EOF
+      
+      - name: Run API tests
+        run: |
+          python -m pytest -v test_api.py
+      
+      - name: Display Kubernetes resources
+        if: always()
+        run: |
+          echo "=== Pods ==="
+          kubectl get pods -A
+          echo ""
+          echo "=== Services ==="
+          kubectl get svc -A
+          echo ""
+          echo "=== Ingress ==="
+          kubectl get ingress -A
+          echo ""
+          echo "=== Pod Logs ==="
+          kubectl logs -l app=rick-and-morty-api --tail=100 || true 

@@ -1,0 +1,42 @@
+replicaCount: 2
+
+image:
+  repository: rick-and-morty-api
+  tag: latest
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 5000
+
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+  hosts:
+    - host: rickandmorty.local
+      paths:
+        - path: /
+          pathType: Prefix
+
+resources:
+  limits:
+    cpu: 200m
+    memory: 256Mi
+  requests:
+    cpu: 100m
+    memory: 128Mi
+
+livenessProbe:
+  enabled: true
+  path: /healthcheck
+  initialDelaySeconds: 30
+  periodSeconds: 30
+
+readinessProbe:
+  enabled: true
+  path: /healthcheck
+  initialDelaySeconds: 10
+  periodSeconds: 10 

@@ -1,0 +1,11 @@
+apiVersion: v2
+name: rick-and-morty
+description: A Helm chart for Rick and Morty Characters API
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+keywords:
+  - rick-and-morty
+  - api
+maintainers:
+  - name: Rick and Morty Team 

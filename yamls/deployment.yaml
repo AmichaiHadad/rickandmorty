@@ -1,0 +1,42 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rick-and-morty-api
+  labels:
+    app: rick-and-morty-api
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: rick-and-morty-api
+  template:
+    metadata:
+      labels:
+        app: rick-and-morty-api
+    spec:
+      containers:
+      - name: rick-and-morty-api
+        image: rick-and-morty-api:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 5000
+          name: http
+        readinessProbe:
+          httpGet:
+            path: /healthcheck
+            port: 5000
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /healthcheck
+            port: 5000
+          initialDelaySeconds: 30
+          periodSeconds: 30
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 200m
+            memory: 256Mi 
