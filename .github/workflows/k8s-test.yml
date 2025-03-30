@@ -26,30 +26,37 @@ jobs:
           load: true
           tags: rick-and-morty-api:latest
       
+      - name: Create Kind Config
+        run: |
+          cat > kind-config.yaml << EOF
+          kind: Cluster
+          apiVersion: kind.x-k8s.io/v1alpha4
+          nodes:
+          - role: control-plane
+            kubeadmConfigPatches:
+            - |
+              kind: InitConfiguration
+              nodeRegistration:
+                kubeletExtraArgs:
+                  node-labels: "ingress-ready=true"
+            extraPortMappings:
+            - containerPort: 80
+              hostPort: 80
+              protocol: TCP
+            - containerPort: 443
+              hostPort: 443
+              protocol: TCP
+          - role: worker
+          EOF
+          
+          cat kind-config.yaml
+      
       - name: Create k8s Kind Cluster
         uses: helm/kind-action@v1.5.0
         with:
           cluster_name: kind
-          config: |
-            kind: Cluster
-            apiVersion: kind.x-k8s.io/v1alpha4
-            nodes:
-            - role: control-plane
-              kubeadmConfigPatches:
-              - |
-                kind: InitConfiguration
-                nodeRegistration:
-                  kubeletExtraArgs:
-                    node-labels: "ingress-ready=true"
-              extraPortMappings:
-              - containerPort: 80
-                hostPort: 80
-                protocol: TCP
-              - containerPort: 443
-                hostPort: 443
-                protocol: TCP
-            - role: worker
-      
+          config: ./kind-config.yaml
+
       - name: Verify cluster setup
         run: |
           kubectl cluster-info
@@ -70,15 +77,18 @@ jobs:
       - name: Install NGINX Ingress
         run: |
           kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.8.2/deploy/static/provider/kind/deploy.yaml
+          
+          echo "Waiting for ingress controller pods to be created..."
+          sleep 20
+          
+          echo "Checking ingress controller pods..."
+          kubectl get pods -n ingress-nginx
+          
           echo "Waiting for ingress controller to be ready..."
           kubectl wait --namespace ingress-nginx \
             --for=condition=ready pod \
             --selector=app.kubernetes.io/component=controller \
             --timeout=180s || true
-          
-          # Check if ingress pods are running
-          echo "Checking ingress controller pods..."
-          kubectl get pods -n ingress-nginx
       
       - name: Install Helm
         uses: azure/setup-helm@v3
@@ -90,18 +100,29 @@ jobs:
           # Deploy using Helm
           helm install rick-and-morty-api ./helm/rick-and-morty
           
+          # Wait for pods to be created
+          sleep 10
+          
+          # Print deployment status
+          echo "Checking deployments..."
+          kubectl get deployments
+          
+          echo "Checking pods..."
+          kubectl get pods
+          
           # Wait for deployment to be ready
+          echo "Waiting for deployment to be ready..."
           kubectl wait --for=condition=available --timeout=120s deployment/rick-and-morty-api || true
           
           # Add host entry to /etc/hosts
           echo "127.0.0.1 rickandmorty.local" | sudo tee -a /etc/hosts
           
-          # Print deployment status
-          kubectl get deployments
-          kubectl get pods
-          
           # Give ingress some time to be configured
-          sleep 10
+          sleep 20
+          
+          # Check if ingress was created
+          echo "Checking ingress resources..."
+          kubectl get ingress
       
       - name: Create test script
         run: |
@@ -109,8 +130,20 @@ jobs:
           import requests
           import time
           import pytest
+          import socket
+          import os
 
+          # Try connecting to service directly instead of through ingress initially
           BASE_URL = "http://rickandmorty.local"
+          DIRECT_PORT_FORWARD = False
+          
+          # If we need to use port forwarding
+          if DIRECT_PORT_FORWARD:
+              # Start port forwarding in background
+              os.system("kubectl port-forward svc/rick-and-morty-api 8080:80 &")
+              time.sleep(5)  # Give it time to start
+              BASE_URL = "http://localhost:8080"
+              
           MAX_RETRIES = 5
           RETRY_DELAY = 5  # seconds
 
@@ -118,7 +151,8 @@ jobs:
               """Test the health endpoint returns OK status."""
               for attempt in range(MAX_RETRIES):
                   try:
-                      response = requests.get(f"{BASE_URL}/healthcheck")
+                      print(f"Testing health endpoint at {BASE_URL}/healthcheck")
+                      response = requests.get(f"{BASE_URL}/healthcheck", timeout=10)
                       response.raise_for_status()
                       data = response.json()
                       assert response.status_code == 200
@@ -171,6 +205,11 @@ jobs:
           
           echo "Testing connection to application..."
           curl -v http://rickandmorty.local/healthcheck || true
+          
+          echo "Starting port forwarding as fallback..."
+          kubectl port-forward svc/rick-and-morty-api 8080:80 &
+          sleep 5
+          curl -v http://localhost:8080/healthcheck || true
       
       - name: Run API tests
         run: |
