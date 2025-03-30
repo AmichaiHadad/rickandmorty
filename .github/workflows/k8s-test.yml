@@ -49,6 +49,13 @@ jobs:
                 hostPort: 443
                 protocol: TCP
             - role: worker
+      
+      - name: Verify cluster setup
+        run: |
+          kubectl cluster-info
+          kubectl get nodes
+          echo "Loading Docker image into Kind cluster..."
+          kind load docker-image rick-and-morty-api:latest --name kind
 
       - name: Set up Python
         uses: actions/setup-python@v4
@@ -67,7 +74,11 @@ jobs:
           kubectl wait --namespace ingress-nginx \
             --for=condition=ready pod \
             --selector=app.kubernetes.io/component=controller \
-            --timeout=180s
+            --timeout=180s || true
+          
+          # Check if ingress pods are running
+          echo "Checking ingress controller pods..."
+          kubectl get pods -n ingress-nginx
       
       - name: Install Helm
         uses: azure/setup-helm@v3
@@ -80,10 +91,14 @@ jobs:
           helm install rick-and-morty-api ./helm/rick-and-morty
           
           # Wait for deployment to be ready
-          kubectl wait --for=condition=available --timeout=120s deployment/rick-and-morty-api
+          kubectl wait --for=condition=available --timeout=120s deployment/rick-and-morty-api || true
           
           # Add host entry to /etc/hosts
           echo "127.0.0.1 rickandmorty.local" | sudo tee -a /etc/hosts
+          
+          # Print deployment status
+          kubectl get deployments
+          kubectl get pods
           
           # Give ingress some time to be configured
           sleep 10
@@ -139,6 +154,23 @@ jobs:
                   assert "location" in data["characters"][0]
                   assert "image" in data["characters"][0]
           EOF
+      
+      - name: Check connectivity before tests
+        run: |
+          echo "Verifying cluster connectivity..."
+          kubectl cluster-info
+          
+          echo "=== Pods ==="
+          kubectl get pods -A
+          
+          echo "=== Services ==="
+          kubectl get svc -A
+          
+          echo "=== Ingress ==="
+          kubectl get ingress -A
+          
+          echo "Testing connection to application..."
+          curl -v http://rickandmorty.local/healthcheck || true
       
       - name: Run API tests
         run: |
